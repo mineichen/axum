@@ -142,7 +142,11 @@ where
                                 Poll::Ready(None)
                             }
                         }
-                        Poll::Ready(Err(e)) => Poll::Ready(Some(Err(e))),
+                        Poll::Ready(Err(e)) => {
+                            self.as_mut()
+                                .project_replace(Self::InitOrFinish { factory: None });
+                            Poll::Ready(Some(Err(e)))
+                        }
                     };
                 }
             };
@@ -178,6 +182,7 @@ mod tests {
         let item = next(stream.as_mut()).await;
 
         assert_eq!(Bytes::from_static(&[42, 42]), item.unwrap().unwrap());
+        assert!(next(stream.as_mut()).await.is_none());
     }
 
     #[tokio::test]
@@ -191,6 +196,7 @@ mod tests {
         let item = next(stream.as_mut()).await;
 
         assert_eq!(Bytes::from_static(&[42]), item.unwrap().unwrap());
+        assert!(next(stream.as_mut()).await.is_none());
     }
     #[tokio::test]
     async fn write_more_than_buffer_capacity_at_once() {
@@ -206,6 +212,19 @@ mod tests {
         assert_eq!(Bytes::from(vec![42; CAPACITY]), item.unwrap().unwrap());
         let item = next(stream.as_mut()).await;
         assert_eq!(Bytes::from_static(&[42]), item.unwrap().unwrap());
+        assert!(next(stream.as_mut()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn error_if_future_errors() {
+        let stream = super::Stream::new(|w: Writer| async move {
+            Err(crate::Error::new(std::io::Error::other("IDK")))
+        });
+        let mut stream = std::pin::pin!(stream);
+        let item = next(stream.as_mut()).await;
+        let error = item.unwrap().unwrap_err();
+        assert!(format!("{error:?}").contains("IDK"), "Error: {error:?}");
+        assert!(next(stream.as_mut()).await.is_none());
     }
 
     async fn write_all<T: AsyncWrite>(
