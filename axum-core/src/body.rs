@@ -1,7 +1,7 @@
 //! HTTP body utilities.
 use std::future::Future;
 
-use crate::{writer, BoxError, Error};
+use crate::{BoxError, Error};
 use bytes::Bytes;
 use futures_core::{Stream, TryStream};
 use http_body::{Body as _, Frame};
@@ -73,7 +73,7 @@ impl Body {
     where
         Fut: Future<Output = Result<(), Error>> + Send + 'static,
     {
-        Self::from_stream(writer::Stream::new(f))
+        Self::from_stream(super::writer::Stream::new(f))
     }
 
     /// Convert the body into a [`Stream`] of data frames.
