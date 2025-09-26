@@ -1,6 +1,7 @@
 //! HTTP body utilities.
+use std::future::Future;
 
-use crate::{BoxError, Error};
+use crate::{writer, BoxError, Error};
 use bytes::Bytes;
 use futures_core::{Stream, TryStream};
 use http_body::{Body as _, Frame};
@@ -65,6 +66,14 @@ impl Body {
         Self::new(StreamBody {
             stream: SyncWrapper::new(stream),
         })
+    }
+
+    /// Create a new 'Body' from a AsyncFnOnce which can fill a provided AsyncWrite until it finishes
+    pub fn with_writer<Fut>(f: impl FnOnce(super::writer::Writer) -> Fut + Send + 'static) -> Self
+    where
+        Fut: Future<Output = Result<(), Error>> + Send + 'static,
+    {
+        Self::from_stream(writer::Stream::new(f))
     }
 
     /// Convert the body into a [`Stream`] of data frames.

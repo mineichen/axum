@@ -26,6 +26,7 @@ pub use self::error::Error;
 pub mod body;
 pub mod extract;
 pub mod response;
+mod writer;
 
 /// Alias for a type-erased error type.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;

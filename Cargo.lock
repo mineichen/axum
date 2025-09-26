@@ -353,6 +353,7 @@ dependencies = [
  "axum-macros",
  "bytes",
  "futures-core",
+ "futures-io",
  "http",
  "http-body",
  "http-body-util",
