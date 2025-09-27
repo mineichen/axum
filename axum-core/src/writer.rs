@@ -9,9 +9,11 @@ use std::{
 use bytes::Bytes;
 use pin_project_lite::pin_project;
 
+use crate::Error as AxumError;
+
 const CAPACITY: usize = 4096;
 type BufferLock = Arc<std::sync::Mutex<Vec<u8>>>;
-type StreamResult = Result<Bytes, crate::error::Error>;
+type StreamResult = Result<Bytes, AxumError>;
 
 #[derive(Debug)]
 pub struct Writer {
@@ -164,9 +166,8 @@ mod tests {
     async fn write_double_u8() {
         let stream = super::Stream::new(|w: Writer| async move {
             let mut w = std::pin::pin!(w);
-            write_all(w.as_mut(), &[42]).await.unwrap();
-            write_all(w, &[42]).await.unwrap();
-            Ok(())
+            write_all(w.as_mut(), &[42]).await.map_err(AxumError::new)?;
+            write_all(w, &[42]).await.map_err(AxumError::new)
         });
         let mut stream = std::pin::pin!(stream);
         let item = next(stream.as_mut()).await;
@@ -179,8 +180,7 @@ mod tests {
     async fn write_single_u8() {
         let stream = super::Stream::new(|w: Writer| async move {
             let w = std::pin::pin!(w);
-            write_all(w, &[42]).await.unwrap();
-            Ok(())
+            write_all(w, &[42]).await.map_err(AxumError::new)
         });
         let mut stream = std::pin::pin!(stream);
         let item = next(stream.as_mut()).await;
@@ -192,8 +192,9 @@ mod tests {
     async fn write_more_than_buffer_capacity_at_once() {
         let stream = super::Stream::new(|w: Writer| async move {
             let w = std::pin::pin!(w);
-            write_all(w, &vec![42; CAPACITY + 1]).await.unwrap();
-            Ok(())
+            write_all(w, &vec![42; CAPACITY + 1])
+                .await
+                .map_err(AxumError::new)
         });
         let mut stream = std::pin::pin!(stream);
         let item = next(stream.as_mut()).await;
@@ -218,12 +219,12 @@ mod tests {
     async fn write_all<T: AsyncWrite>(
         mut stream: Pin<&mut T>,
         mut data: &[u8],
-    ) -> std::io::Result<usize> {
+    ) -> std::io::Result<()> {
         let stream = &mut stream;
         loop {
             let written = std::future::poll_fn(|cx| stream.as_mut().poll_write(cx, data)).await?;
             if data.len() == written {
-                return Ok(data.len());
+                return Ok(());
             } else {
                 data = &data[written..];
             }
