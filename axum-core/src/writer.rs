@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    marker::PhantomPinned,
     ops::DerefMut,
     pin::Pin,
     sync::Arc,
@@ -18,6 +19,7 @@ type StreamResult = Result<Bytes, AxumError>;
 #[derive(Debug)]
 pub struct Writer {
     buf: BufferLock,
+    _pin: PhantomPinned,
 }
 
 impl futures_io::AsyncWrite for Writer {
@@ -104,7 +106,10 @@ where
             match self.as_mut().project() {
                 StreamStateProj::InitOrFinish { factory } => match factory.take() {
                     Some(factory) => {
-                        let writer = Writer { buf: buf.clone() };
+                        let writer = Writer {
+                            buf: buf.clone(),
+                            _pin: PhantomPinned,
+                        };
                         let stream_state = Self::Running {
                             future: factory(writer),
                         };
@@ -155,9 +160,9 @@ mod tests {
 
     #[tokio::test]
     async fn write_nothing() {
-        let stream = super::Stream::new(|_| async move { Result::<_, crate::Error>::Ok(()) });
-        let stream = std::pin::pin!(stream);
-        let item = next(stream).await;
+        let stream = super::Stream::new(|_| std::future::ready(Ok(())));
+        let mut stream = std::pin::pin!(stream);
+        let item = next(&mut stream).await;
 
         assert!(item.is_none(), "{item:?}");
     }
@@ -166,42 +171,42 @@ mod tests {
     async fn write_double_u8() {
         let stream = super::Stream::new(|w: Writer| async move {
             let mut w = std::pin::pin!(w);
-            write_all(w.as_mut(), &[42]).await.map_err(AxumError::new)?;
-            write_all(w, &[42]).await.map_err(AxumError::new)
+            write_all(&mut w, &[42]).await.map_err(AxumError::new)?;
+            write_all(&mut w, &[42]).await.map_err(AxumError::new)
         });
         let mut stream = std::pin::pin!(stream);
-        let item = next(stream.as_mut()).await;
+        let item = next(&mut stream).await;
 
         assert_eq!(Bytes::from_static(&[42, 42]), item.unwrap().unwrap());
-        assert!(next(stream.as_mut()).await.is_none());
+        assert!(next(&mut stream).await.is_none());
     }
 
     #[tokio::test]
     async fn write_single_u8() {
         let stream = super::Stream::new(|w: Writer| async move {
-            let w = std::pin::pin!(w);
-            write_all(w, &[42]).await.map_err(AxumError::new)
+            let mut w = std::pin::pin!(w);
+            write_all(&mut w, &[42]).await.map_err(AxumError::new)
         });
         let mut stream = std::pin::pin!(stream);
-        let item = next(stream.as_mut()).await;
+        let item = next(&mut stream).await;
 
         assert_eq!(Bytes::from_static(&[42]), item.unwrap().unwrap());
-        assert!(next(stream.as_mut()).await.is_none());
+        assert!(next(&mut stream).await.is_none());
     }
     #[tokio::test]
     async fn write_more_than_buffer_capacity_at_once() {
         let stream = super::Stream::new(|w: Writer| async move {
-            let w = std::pin::pin!(w);
-            write_all(w, &vec![42; CAPACITY + 1])
+            let mut w = std::pin::pin!(w);
+            write_all(&mut w, &vec![42; CAPACITY + 1])
                 .await
                 .map_err(AxumError::new)
         });
         let mut stream = std::pin::pin!(stream);
-        let item = next(stream.as_mut()).await;
+        let item = next(&mut stream).await;
         assert_eq!(Bytes::from(vec![42; CAPACITY]), item.unwrap().unwrap());
-        let item = next(stream.as_mut()).await;
+        let item = next(&mut stream).await;
         assert_eq!(Bytes::from_static(&[42]), item.unwrap().unwrap());
-        assert!(next(stream.as_mut()).await.is_none());
+        assert!(next(&mut stream).await.is_none());
     }
 
     #[tokio::test]
@@ -210,19 +215,19 @@ mod tests {
             Err(crate::Error::new(std::io::Error::other("IDK")))
         });
         let mut stream = std::pin::pin!(stream);
-        let item = next(stream.as_mut()).await;
+        let item = next(&mut stream).await;
         let error = item.unwrap().unwrap_err();
         assert!(format!("{error:?}").contains("IDK"), "Error: {error:?}");
-        assert!(next(stream.as_mut()).await.is_none());
+        assert!(next(&mut stream).await.is_none());
     }
 
-    async fn write_all<T: AsyncWrite>(
-        mut stream: Pin<&mut T>,
+    async fn write_all<T: AsyncWrite + Unpin>(
+        mut stream: &mut T,
         mut data: &[u8],
     ) -> std::io::Result<()> {
-        let stream = &mut stream;
         loop {
-            let written = std::future::poll_fn(|cx| stream.as_mut().poll_write(cx, data)).await?;
+            let written =
+                std::future::poll_fn(|cx| std::pin::pin!(&mut stream).poll_write(cx, data)).await?;
             if data.len() == written {
                 return Ok(());
             } else {
@@ -230,10 +235,10 @@ mod tests {
             }
         }
     }
-    async fn next<T: Stream>(mut stream: Pin<&mut T>) -> Option<T::Item>
+    async fn next<T: Stream + Unpin>(mut stream: &mut T) -> Option<T::Item>
     where
         T::Item: std::fmt::Debug,
     {
-        std::future::poll_fn(|cx| stream.as_mut().poll_next(cx)).await
+        std::future::poll_fn(|cx| std::pin::pin!(&mut stream).poll_next(cx)).await
     }
 }
