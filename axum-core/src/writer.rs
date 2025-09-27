@@ -1,6 +1,6 @@
 use std::{
     future::Future,
-    ops::{Deref, DerefMut},
+    ops::DerefMut,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -16,20 +16,6 @@ type StreamResult = Result<Bytes, crate::error::Error>;
 #[derive(Debug)]
 pub struct Writer {
     buf: BufferLock,
-}
-
-impl Deref for Writer {
-    type Target = Self;
-
-    fn deref(&self) -> &Self::Target {
-        self
-    }
-}
-
-impl DerefMut for Writer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self
-    }
 }
 
 impl futures_io::AsyncWrite for Writer {
@@ -66,7 +52,11 @@ pin_project! {
     }
 }
 
-impl<TFactory, TFut> Stream<TFactory, TFut> {
+impl<TFactory, TFut> Stream<TFactory, TFut>
+where
+    TFactory: FnOnce(Writer) -> TFut,
+    TFut: Future<Output = Result<(), crate::Error>>,
+{
     pub(super) fn new(factory: TFactory) -> Self {
         Self {
             state: StreamState::InitOrFinish {
@@ -164,8 +154,8 @@ mod tests {
     #[tokio::test]
     async fn write_nothing() {
         let stream = super::Stream::new(|_| async move { Result::<_, crate::Error>::Ok(()) });
-        let mut stream = std::pin::pin!(stream);
-        let item = next(stream.as_mut()).await;
+        let stream = std::pin::pin!(stream);
+        let item = next(stream).await;
 
         assert!(item.is_none(), "{item:?}");
     }
@@ -173,10 +163,10 @@ mod tests {
     #[tokio::test]
     async fn write_double_u8() {
         let stream = super::Stream::new(|w: Writer| async move {
-            let mut w = std::pin::Pin::new(w);
-            write_all(Pin::as_mut(&mut w), &[42]).await.unwrap();
-            write_all(Pin::as_mut(&mut w), &[42]).await.unwrap();
-            Result::<_, crate::Error>::Ok(())
+            let mut w = std::pin::pin!(w);
+            write_all(w.as_mut(), &[42]).await.unwrap();
+            write_all(w, &[42]).await.unwrap();
+            Ok(())
         });
         let mut stream = std::pin::pin!(stream);
         let item = next(stream.as_mut()).await;
@@ -188,9 +178,9 @@ mod tests {
     #[tokio::test]
     async fn write_single_u8() {
         let stream = super::Stream::new(|w: Writer| async move {
-            let mut w = std::pin::Pin::new(w);
-            write_all(Pin::as_mut(&mut w), &[42]).await.unwrap();
-            Result::<_, crate::Error>::Ok(())
+            let w = std::pin::pin!(w);
+            write_all(w, &[42]).await.unwrap();
+            Ok(())
         });
         let mut stream = std::pin::pin!(stream);
         let item = next(stream.as_mut()).await;
@@ -201,11 +191,9 @@ mod tests {
     #[tokio::test]
     async fn write_more_than_buffer_capacity_at_once() {
         let stream = super::Stream::new(|w: Writer| async move {
-            let mut w = std::pin::Pin::new(w);
-            write_all(Pin::as_mut(&mut w), &vec![42; CAPACITY + 1])
-                .await
-                .unwrap();
-            Result::<_, crate::Error>::Ok(())
+            let w = std::pin::pin!(w);
+            write_all(w, &vec![42; CAPACITY + 1]).await.unwrap();
+            Ok(())
         });
         let mut stream = std::pin::pin!(stream);
         let item = next(stream.as_mut()).await;
@@ -217,7 +205,7 @@ mod tests {
 
     #[tokio::test]
     async fn error_if_future_errors() {
-        let stream = super::Stream::new(|w: Writer| async move {
+        let stream = super::Stream::new(|_: Writer| async move {
             Err(crate::Error::new(std::io::Error::other("IDK")))
         });
         let mut stream = std::pin::pin!(stream);
@@ -231,6 +219,7 @@ mod tests {
         mut stream: Pin<&mut T>,
         mut data: &[u8],
     ) -> std::io::Result<usize> {
+        let stream = &mut stream;
         loop {
             let written = std::future::poll_fn(|cx| stream.as_mut().poll_write(cx, data)).await?;
             if data.len() == written {
