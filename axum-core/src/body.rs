@@ -69,9 +69,12 @@ impl Body {
     }
 
     /// Create a new 'Body' from a AsyncFnOnce which can fill a provided AsyncWrite until it finishes
-    pub fn with_writer<Fut>(f: impl FnOnce(super::writer::Writer) -> Fut + Send + 'static) -> Self
+    pub fn with_writer<Fut, E>(
+        f: impl FnOnce(super::writer::Writer) -> Fut + Send + 'static,
+    ) -> Self
     where
-        Fut: Future<Output = Result<(), Error>> + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: Into<BoxError>,
     {
         Self::from_stream(super::writer::Stream::new(f))
     }

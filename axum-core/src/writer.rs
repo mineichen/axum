@@ -10,11 +10,10 @@ use std::{
 use bytes::Bytes;
 use pin_project_lite::pin_project;
 
-use crate::Error as AxumError;
+use crate::BoxError;
 
 const CAPACITY: usize = 4096;
 type BufferLock = Arc<std::sync::Mutex<Vec<u8>>>;
-type StreamResult = Result<Bytes, AxumError>;
 
 #[derive(Debug)]
 pub struct Writer {
@@ -53,13 +52,15 @@ pin_project! {
     pub(super) struct Stream<TFactory, TFut> {
         #[pin] state: StreamState<TFactory, TFut>,
         buf: BufferLock,
+        _pin: PhantomPinned
     }
 }
 
-impl<TFactory, TFut> Stream<TFactory, TFut>
+impl<TFactory, TFut, E> Stream<TFactory, TFut>
 where
     TFactory: FnOnce(Writer) -> TFut,
-    TFut: Future<Output = Result<(), crate::Error>>,
+    TFut: Future<Output = Result<(), E>>,
+    E: Into<BoxError>,
 {
     pub(super) fn new(factory: TFactory) -> Self {
         Self {
@@ -67,6 +68,7 @@ where
                 factory: Some(factory),
             },
             buf: Arc::new(Vec::with_capacity(CAPACITY).into()),
+            _pin: PhantomPinned,
         }
     }
 }
@@ -80,28 +82,28 @@ pin_project! {
     }
 }
 
-impl<TFactory, TFut> futures_core::Stream for Stream<TFactory, TFut>
+impl<TFactory, TFut, E> futures_core::Stream for Stream<TFactory, TFut>
 where
     TFactory: FnOnce(Writer) -> TFut,
-    TFut: Future<Output = Result<(), crate::Error>>,
+    TFut: Future<Output = Result<(), E>>,
 {
-    type Item = Result<Bytes, crate::Error>;
+    type Item = Result<Bytes, E>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let that = self.project();
         that.state.poll_next(cx, that.buf)
     }
 }
-impl<TFactory, TFut> StreamState<TFactory, TFut>
+impl<TFactory, TFut, E> StreamState<TFactory, TFut>
 where
     TFactory: FnOnce(Writer) -> TFut,
-    TFut: Future<Output = Result<(), crate::Error>>,
+    TFut: Future<Output = Result<(), E>>,
 {
     fn poll_next(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &BufferLock,
-    ) -> Poll<Option<StreamResult>> {
+    ) -> Poll<Option<Result<Bytes, E>>> {
         loop {
             match self.as_mut().project() {
                 StreamStateProj::InitOrFinish { factory } => match factory.take() {
@@ -160,9 +162,9 @@ mod tests {
 
     #[tokio::test]
     async fn write_nothing() {
-        let stream = super::Stream::new(|_| std::future::ready(Ok(())));
-        let mut stream = std::pin::pin!(stream);
-        let item = next(&mut stream).await;
+        let stream =
+            super::Stream::new(|_| std::future::ready(Result::<_, std::io::Error>::Ok(())));
+        let item = next(stream).await;
 
         assert!(item.is_none(), "{item:?}");
     }
@@ -171,8 +173,8 @@ mod tests {
     async fn write_double_u8() {
         let stream = super::Stream::new(|w: Writer| async move {
             let mut w = std::pin::pin!(w);
-            write_all(&mut w, &[42]).await.map_err(AxumError::new)?;
-            write_all(&mut w, &[42]).await.map_err(AxumError::new)
+            write_all(&mut w, &[42]).await?;
+            write_all(w, &[42]).await
         });
         let mut stream = std::pin::pin!(stream);
         let item = next(&mut stream).await;
@@ -184,8 +186,8 @@ mod tests {
     #[tokio::test]
     async fn write_single_u8() {
         let stream = super::Stream::new(|w: Writer| async move {
-            let mut w = std::pin::pin!(w);
-            write_all(&mut w, &[42]).await.map_err(AxumError::new)
+            let w = std::pin::pin!(w);
+            write_all(w, &[42]).await
         });
         let mut stream = std::pin::pin!(stream);
         let item = next(&mut stream).await;
@@ -196,10 +198,8 @@ mod tests {
     #[tokio::test]
     async fn write_more_than_buffer_capacity_at_once() {
         let stream = super::Stream::new(|w: Writer| async move {
-            let mut w = std::pin::pin!(w);
-            write_all(&mut w, &vec![42; CAPACITY + 1])
-                .await
-                .map_err(AxumError::new)
+            let w = std::pin::pin!(w);
+            write_all(w, &vec![42; CAPACITY + 1]).await
         });
         let mut stream = std::pin::pin!(stream);
         let item = next(&mut stream).await;
@@ -222,7 +222,7 @@ mod tests {
     }
 
     async fn write_all<T: AsyncWrite + Unpin>(
-        mut stream: &mut T,
+        mut stream: T,
         mut data: &[u8],
     ) -> std::io::Result<()> {
         loop {
@@ -235,7 +235,7 @@ mod tests {
             }
         }
     }
-    async fn next<T: Stream + Unpin>(mut stream: &mut T) -> Option<T::Item>
+    async fn next<T: Stream + Unpin>(mut stream: T) -> Option<T::Item>
     where
         T::Item: std::fmt::Debug,
     {
