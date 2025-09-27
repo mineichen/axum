@@ -231,8 +231,20 @@ where
     }
 }
 
-#[test]
-fn test_try_downcast() {
-    assert_eq!(try_downcast::<i32, _>(5_u32), Err(5_u32));
-    assert_eq!(try_downcast::<i32, _>(5_i32), Ok(5_i32));
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_try_downcast() {
+        assert_eq!(try_downcast::<i32, _>(5_u32), Err(5_u32));
+        assert_eq!(try_downcast::<i32, _>(5_i32), Ok(5_i32));
+    }
+
+    #[test]
+    fn build_writer_body() {
+        let _ = Body::with_writer(|w| async move {
+            drop(w);
+            Result::<_, std::io::Error>::Ok(())
+        });
+    }
 }
